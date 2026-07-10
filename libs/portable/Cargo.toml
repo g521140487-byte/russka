@@ -27,6 +27,7 @@ native-windows-gui = {version = "1.0", default-features = false, features = ["an
 
 [package.metadata.winres]
 LegalCopyright = "Copyright (c) 2026 ruibo and RustDesk contributors."
+CompanyName = "ruibo"
 ProductName = "ruibo"
 OriginalFilename = "ruibo.exe"
 FileDescription = "ruibo Remote Desktop"

@@ -211,6 +211,7 @@ libxdo-sys = { path = "libs/libxdo-sys-stub" }
 
 [package.metadata.winres]
 LegalCopyright = "Copyright (c) 2026 ruibo and RustDesk contributors."
+CompanyName = "ruibo"
 ProductName = "ruibo"
 FileDescription = "ruibo Remote Desktop"
 OriginalFilename = "ruibo.exe"
