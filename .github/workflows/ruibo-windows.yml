@@ -6,6 +6,9 @@ on:
     branches:
       - master
 
+permissions:
+  contents: write
+
 jobs:
   build-ruibo-windows:
     uses: ./.github/workflows/flutter-build.yml
