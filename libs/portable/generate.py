@@ -77,7 +77,7 @@ def build_portable(output_folder: str, target: str):
         os.chdir(current_dir)
 
 # Linux: python3 generate.py -f ../rustdesk-portable-packer/test -o . -e ./test/main.py
-# Windows: python3 .\generate.py -f ..\rustdesk\flutter\build\windows\runner\Debug\ -o . -e ..\rustdesk\flutter\build\windows\runner\Debug\rustdesk.exe
+# Windows: python3 .\generate.py -f ..\rustdesk\flutter\build\windows\runner\Debug\ -o . -e ..\rustdesk\flutter\build\windows\runner\Debug\ruibo.exe
 
 
 if __name__ == '__main__':
@@ -87,7 +87,7 @@ if __name__ == '__main__':
     parser.add_option("-o", "--output", dest="output_folder",
                       help="the root of portable packer project, default is './'")
     parser.add_option("-e", "--executable", dest="executable",
-                      help="specify startup file in --folder, default is rustdesk.exe")
+                      help="specify startup file in --folder, default is ruibo.exe")
     parser.add_option("-t", "--target", dest="target",
                       help="the target used by cargo")
     parser.add_option("-l", "--level", dest="level", type="int",
@@ -97,7 +97,7 @@ if __name__ == '__main__':
     output_folder = os.path.abspath(options.output_folder or './')
 
     if not options.executable:
-        options.executable = 'rustdesk.exe'
+        options.executable = 'ruibo.exe'
     if not options.executable.startswith(folder):
         options.executable = folder + '/' + options.executable
     exe: str = os.path.abspath(options.executable)
