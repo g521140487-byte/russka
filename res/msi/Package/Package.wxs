@@ -39,6 +39,7 @@
 
 		<Feature Id="App" Level="1" AllowAdvertise="no" Display="expand" Title="!(loc.F_App)" Description="!(loc.F_App_Desc)" AllowAbsent="no">
 			<ComponentGroupRef Id="Components" />
+			<ComponentRef Id="InstallFolder.Security" />
 
 			<ComponentRef Id="Product.Registry.InstallFolder" />
 			<ComponentRef Id="Product.Registry.DefaultIcon" />

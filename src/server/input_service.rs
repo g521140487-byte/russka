@@ -27,11 +27,27 @@ use std::{
     time::{self, Duration, Instant},
 };
 
+#[cfg(target_os = "windows")]
+use std::sync::atomic::AtomicUsize;
+
 #[cfg(windows)]
 use winapi::um::winuser::WHEEL_DELTA;
 
 const INVALID_CURSOR_POS: i32 = i32::MIN;
 const INVALID_DISPLAY_IDX: i32 = -1;
+
+#[cfg(target_os = "windows")]
+static KEYBOARD_SIMULATION_FAILURES: AtomicUsize = AtomicUsize::new(0);
+
+#[cfg(target_os = "windows")]
+fn log_keyboard_simulation_failure(operation: &str) {
+    let count = KEYBOARD_SIMULATION_FAILURES.fetch_add(1, Ordering::Relaxed) + 1;
+    if count <= 10 || count % 100 == 0 {
+        log::error!(
+            "Windows keyboard simulation failed (failure #{count}, operation={operation}). SendInput may be blocked by UIPI or endpoint security."
+        );
+    }
+}
 
 #[derive(Default)]
 struct StateCursor {
@@ -1457,6 +1473,9 @@ fn simulate_(event_type: &EventType) {
     match rdev::simulate(&event_type) {
         Ok(()) => (),
         Err(_simulate_error) => {
+            #[cfg(target_os = "windows")]
+            log_keyboard_simulation_failure("rdev::simulate");
+            #[cfg(not(target_os = "windows"))]
             log::error!("Could not send {:?}", &event_type);
         }
     }
@@ -2096,10 +2115,18 @@ fn translate_keyboard_mode(evt: &KeyEvent) {
                     // char in rust is 4 bytes.
                     // But for this case, char comes from keyboard. We only need 2 bytes.
                     #[cfg(target_os = "windows")]
-                    if simulate_win_hot_key {
-                        rdev::simulate_char(chr, true).ok();
+                    let result = if simulate_win_hot_key {
+                        rdev::simulate_char(chr, true)
                     } else {
-                        rdev::simulate_unicode(chr as _).ok();
+                        rdev::simulate_unicode(chr as _)
+                    };
+                    #[cfg(target_os = "windows")]
+                    if result.is_err() {
+                        log_keyboard_simulation_failure(if simulate_win_hot_key {
+                            "rdev::simulate_char"
+                        } else {
+                            "rdev::simulate_unicode"
+                        });
                     }
                     #[cfg(target_os = "linux")]
                     en.key_click(Key::Layout(chr));
@@ -2160,7 +2187,9 @@ fn simulate_win2win_hotkey(code: u32, down: bool) {
 
     let keycode: u16 = ((code >> 16) & 0x0000FFFF) as u16;
     let scan = rdev::vk_to_scancode(keycode as _);
-    allow_err!(rdev::simulate_code(None, Some(scan), down));
+    if rdev::simulate_code(None, Some(scan), down).is_err() {
+        log_keyboard_simulation_failure("rdev::simulate_code(win2win-hotkey)");
+    }
 }
 
 #[cfg(not(any(target_os = "windows", target_os = "linux")))]

@@ -23,6 +23,7 @@ static mut LAYOUT: HKL = std::ptr::null_mut();
 pub const ENIGO_INPUT_EXTRA_VALUE: ULONG_PTR = 100;
 
 static KEYBOARD_SEND_FAILURES: AtomicUsize = AtomicUsize::new(0);
+static MOUSE_SEND_FAILURES: AtomicUsize = AtomicUsize::new(0);
 
 fn log_keyboard_send_failure(flags: u32, vk: u16, scan: u16) {
     let count = KEYBOARD_SEND_FAILURES.fetch_add(1, Ordering::Relaxed) + 1;
@@ -37,6 +38,22 @@ fn log_keyboard_send_failure(flags: u32, vk: u16, scan: u16) {
         } else {
             log::error!(
                 "Windows SendInput inserted 0 keyboard events (failure #{count}, flags={flags:#x}, vk={vk:#x}, scan={scan:#x}): {error}"
+            );
+        }
+    }
+}
+
+fn log_mouse_send_failure(flags: u32, data: u32) {
+    let count = MOUSE_SEND_FAILURES.fetch_add(1, Ordering::Relaxed) + 1;
+    if count <= 10 || count % 100 == 0 {
+        let error = get_error();
+        if error.is_empty() {
+            log::error!(
+                "Windows SendInput inserted 0 mouse events (failure #{count}, flags={flags:#x}, data={data:#x}). Input injection may be blocked by endpoint security."
+            );
+        } else {
+            log::error!(
+                "Windows SendInput inserted 0 mouse events (failure #{count}, flags={flags:#x}, data={data:#x}): {error}"
             );
         }
     }
@@ -58,7 +75,14 @@ fn mouse_event(flags: u32, data: u32, dx: i32, dy: i32) -> DWORD {
         type_: INPUT_MOUSE,
         u,
     };
-    unsafe { SendInput(1, &mut input as LPINPUT, size_of::<INPUT>() as c_int) }
+    let result = unsafe {
+        SetLastError(0);
+        SendInput(1, &mut input as LPINPUT, size_of::<INPUT>() as c_int)
+    };
+    if result == 0 {
+        log_mouse_send_failure(flags, data);
+    }
+    result
 }
 
 fn keybd_event(mut flags: u32, vk: u16, scan: u16) -> DWORD {
@@ -192,9 +216,11 @@ impl MouseControllable for Enigo {
         );
         if res == 0 {
             let err = get_error();
-            if !err.is_empty() {
-                return Err(err.into());
-            }
+            return Err(if err.is_empty() {
+                "Windows SendInput inserted 0 mouse events".into()
+            } else {
+                err.into()
+            });
         }
         Ok(())
     }
@@ -302,8 +328,12 @@ impl KeyboardControllable for Enigo {
                         }
                     }
 
-                    if !err.is_empty() {
-                        return Err(err.into());
+                    if res == 0 {
+                        return Err(if err.is_empty() {
+                            "Windows SendInput inserted 0 keyboard events".into()
+                        } else {
+                            err.into()
+                        });
                     }
                 } else {
                     return Err(format!("Failed to get keycode of {}", c).into());
@@ -317,9 +347,11 @@ impl KeyboardControllable for Enigo {
                 let res = keybd_event(0, code, 0);
                 if res == 0 {
                     let err = get_error();
-                    if !err.is_empty() {
-                        return Err(err.into());
-                    }
+                    return Err(if err.is_empty() {
+                        "Windows SendInput inserted 0 keyboard events".into()
+                    } else {
+                        err.into()
+                    });
                 }
             }
         }

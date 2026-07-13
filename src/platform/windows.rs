@@ -1459,6 +1459,15 @@ pub fn copy_exe_cmd(src_exe: &str, exe: &str, path: &str) -> ResultType<String> 
     ))
 }
 
+fn harden_install_directory_cmd(path: &str) -> String {
+    format!(
+        r#"
+icacls "{path}" /inheritance:r
+icacls "{path}" /grant:r "*S-1-5-18:(OI)(CI)(F)" "*S-1-5-32-544:(OI)(CI)(F)" "*S-1-5-32-545:(OI)(CI)(RX)"
+"#
+    )
+}
+
 #[inline]
 pub fn rename_exe_cmd(src_exe: &str, path: &str) -> ResultType<String> {
     let src_exe_filename = PathBuf::from(src_exe)
@@ -1705,6 +1714,7 @@ copy /Y \"{tmp_path}\\{app_name} Tray.lnk\" \"%PROGRAMDATA%\\Microsoft\\Windows\
 chcp 65001
 md \"{path}\"
 {copy_exe}
+{harden_install_directory}
 reg add {subkey} /f
 reg add {subkey} /f /v DisplayIcon /t REG_SZ /d \"{display_icon}\"
 reg add {subkey} /f /v DisplayName /t REG_SZ /d \"{app_name}\"
@@ -1742,6 +1752,7 @@ copy /Y \"{tmp_path}\\Uninstall {app_name}.lnk\" \"{path}\\\"
         sleep = if debug { "timeout 300" } else { "" },
         dels = if debug { "" } else { &dels },
         copy_exe = copy_exe_cmd(&src_exe, &exe, &path)?,
+        harden_install_directory = harden_install_directory_cmd(&path),
         import_config = get_import_config(&exe),
     );
     run_cmds(cmds, debug, "install")?;
@@ -3403,6 +3414,7 @@ sc stop {app_name}
 taskkill /F /IM {app_name}.exe{filter}
 {reg_cmd}
 {copy_exe}
+{harden_install_directory}
 {rename_exe}
 {remove_meta_toml}
 {restore_service_cmd}
@@ -3412,6 +3424,7 @@ taskkill /F /IM {app_name}.exe{filter}
     ",
         app_name = app_name,
         copy_exe = copy_exe_cmd(&src_exe, &exe, &path)?,
+        harden_install_directory = harden_install_directory_cmd(&path),
         rename_exe = rename_exe_cmd(&src_exe, &path)?,
         remove_meta_toml = remove_meta_toml_cmd(is_msi.unwrap_or(true), &path),
         sleep = if debug { "timeout 300" } else { "" },

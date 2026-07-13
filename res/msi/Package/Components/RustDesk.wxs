@@ -5,6 +5,11 @@
 		<?include ../Includes.wxi?>
 
 		<DirectoryRef Id="INSTALLFOLDER_INNER" FileSource="$(var.BuildDir)">
+			<Component Id="InstallFolder.Security" Guid="6F7AE7B7-9A67-49A8-9A8A-AB8B4FA4D8C1">
+				<CreateFolder>
+					<PermissionEx Sddl="D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;0x1200A9;;;BU)" />
+				</CreateFolder>
+			</Component>
 			<Component Id="App.exe" Guid="620F0F69-4C17-4320-A619-495E329712A4">
 				<File Id="App.exe" Name="$(var.Product).exe" KeyPath="yes" Checksum="yes">
 					<!--<fire:FirewallException Id="AppEx" Name="$(var.Product) Service" Scope="any" IgnoreFailure="yes" />-->
