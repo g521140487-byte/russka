@@ -13,6 +13,8 @@ src/version.rs
 *exe
 *tgz
 cert.pfx
+*.pfx
+res/signing/output/
 *.bak
 *png
 !flutter/assets/icon.png
