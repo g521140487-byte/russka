@@ -354,7 +354,10 @@ jobs:
           python3 ./generate.py -f ../../rustdesk/ -o . -e ../../rustdesk/ruibo.exe
           popd
           mkdir -p ./SignOutput
-          mv ./target/release/rustdesk-portable-packer.exe ./SignOutput/ruibo-${{ env.VERSION }}-${{ matrix.job.arch }}.exe
+          # The launcher only enters installation mode when its filename ends in
+          # "install.exe". Keep this suffix so the service is installed and input
+          # can be forwarded from the SYSTEM process to elevated applications.
+          mv ./target/release/rustdesk-portable-packer.exe ./SignOutput/ruibo-${{ env.VERSION }}-${{ matrix.job.arch }}-install.exe
 
       - name: Add MSBuild to PATH
         uses: microsoft/setup-msbuild@6fb02220983dee41ce7ae257b6f4d8f9bf5ed4ce # v2
@@ -541,7 +544,8 @@ jobs:
           python3 ./generate.py -f ../../Release/ -o . -e ../../Release/ruibo.exe
           popd
           mkdir -p ./SignOutput
-          mv ./target/release/rustdesk-portable-packer.exe ./SignOutput/ruibo-${{ env.VERSION }}-${{ matrix.job.arch }}-sciter.exe
+          # Keep install.exe as the final suffix; see common::is_setup().
+          mv ./target/release/rustdesk-portable-packer.exe ./SignOutput/ruibo-${{ env.VERSION }}-${{ matrix.job.arch }}-sciter-install.exe
 
       - name: Upload ruibo package
         if: env.UPLOAD_ARTIFACT == 'true'

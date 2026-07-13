@@ -7,9 +7,11 @@ use winapi;
 use crate::win::keycodes::*;
 use crate::{Key, KeyboardControllable, MouseButton, MouseControllable};
 use std::mem::*;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 extern "system" {
     pub fn GetLastError() -> DWORD;
+    pub fn SetLastError(dwErrCode: DWORD);
 }
 
 /// The main struct for handling the event emitting
@@ -19,6 +21,26 @@ static mut LAYOUT: HKL = std::ptr::null_mut();
 
 /// The dwExtraInfo value in keyboard and mouse structure that used in SendInput()
 pub const ENIGO_INPUT_EXTRA_VALUE: ULONG_PTR = 100;
+
+static KEYBOARD_SEND_FAILURES: AtomicUsize = AtomicUsize::new(0);
+
+fn log_keyboard_send_failure(flags: u32, vk: u16, scan: u16) {
+    let count = KEYBOARD_SEND_FAILURES.fetch_add(1, Ordering::Relaxed) + 1;
+    // A blocked keyboard can generate hundreds of events per second. Keep enough
+    // evidence for diagnosis without allowing the log file to grow unbounded.
+    if count <= 10 || count % 100 == 0 {
+        let error = get_error();
+        if error.is_empty() {
+            log::error!(
+                "Windows SendInput inserted 0 keyboard events (failure #{count}, flags={flags:#x}, vk={vk:#x}, scan={scan:#x}). The target may be on a higher-integrity/UAC desktop or input injection may be blocked by endpoint security."
+            );
+        } else {
+            log::error!(
+                "Windows SendInput inserted 0 keyboard events (failure #{count}, flags={flags:#x}, vk={vk:#x}, scan={scan:#x}): {error}"
+            );
+        }
+    }
+}
 
 fn mouse_event(flags: u32, data: u32, dx: i32, dy: i32) -> DWORD {
     let mut u = INPUT_u::default();
@@ -72,13 +94,20 @@ fn keybd_event(mut flags: u32, vk: u16, scan: u16) -> DWORD {
         type_: INPUT_KEYBOARD,
         u: union,
     }; 1];
-    unsafe {
+    let result = unsafe {
+        // SendInput does not set an error when UIPI blocks injection. Clear any
+        // stale value so the diagnostic below does not report an unrelated error.
+        SetLastError(0);
         SendInput(
             inputs.len() as UINT,
             inputs.as_mut_ptr(),
             size_of::<INPUT>() as c_int,
         )
+    };
+    if result == 0 {
+        log_keyboard_send_failure(flags, vk, scan);
     }
+    result
 }
 
 fn get_error() -> String {
