@@ -8,6 +8,7 @@ use crate::win::keycodes::*;
 use crate::{Key, KeyboardControllable, MouseButton, MouseControllable};
 use std::mem::*;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::Duration;
 
 extern "system" {
     pub fn GetLastError() -> DWORD;
@@ -25,19 +26,86 @@ pub const ENIGO_INPUT_EXTRA_VALUE: ULONG_PTR = 100;
 static KEYBOARD_SEND_FAILURES: AtomicUsize = AtomicUsize::new(0);
 static MOUSE_SEND_FAILURES: AtomicUsize = AtomicUsize::new(0);
 
+const SEND_INPUT_RETRY_ATTEMPTS: usize = 2;
+const SEND_INPUT_RETRY_DELAY_MS: u64 = 2;
+const WINDOW_TITLE_LOG_LIMIT: usize = 160;
+
+fn send_input_with_retry(inputs: &mut [INPUT]) -> DWORD {
+    let mut result = 0;
+    for attempt in 0..=SEND_INPUT_RETRY_ATTEMPTS {
+        result = unsafe {
+            // SendInput does not set an error when UIPI blocks injection. Clear any
+            // stale value so diagnostics do not report an unrelated error.
+            SetLastError(0);
+            SendInput(
+                inputs.len() as UINT,
+                inputs.as_mut_ptr(),
+                size_of::<INPUT>() as c_int,
+            )
+        };
+        if result != 0 || attempt == SEND_INPUT_RETRY_ATTEMPTS {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(SEND_INPUT_RETRY_DELAY_MS));
+    }
+    result
+}
+
+fn foreground_keyboard_layout() -> HKL {
+    unsafe {
+        let hwnd = GetForegroundWindow();
+        let thread_id = if hwnd.is_null() {
+            0
+        } else {
+            GetWindowThreadProcessId(hwnd, std::ptr::null_mut())
+        };
+        GetKeyboardLayout(thread_id)
+    }
+}
+
+fn foreground_window_debug_context() -> String {
+    unsafe {
+        let hwnd = GetForegroundWindow();
+        if hwnd.is_null() {
+            return "foreground_hwnd=NULL".to_owned();
+        }
+
+        let mut process_id: DWORD = 0;
+        let thread_id = GetWindowThreadProcessId(hwnd, &mut process_id);
+        let layout = GetKeyboardLayout(thread_id);
+        let mut title = vec![0u16; WINDOW_TITLE_LOG_LIMIT + 1];
+        let title_len = GetWindowTextW(hwnd, title.as_mut_ptr(), title.len() as c_int);
+        let title = if title_len > 0 {
+            String::from_utf16_lossy(&title[..title_len as usize])
+        } else {
+            String::new()
+        };
+
+        format!(
+            "foreground_hwnd={:?}, foreground_thread_id={}, foreground_pid={}, keyboard_layout={:#x}, foreground_title={:?}",
+            hwnd,
+            thread_id,
+            process_id,
+            layout as usize,
+            title
+        )
+    }
+}
+
 fn log_keyboard_send_failure(flags: u32, vk: u16, scan: u16) {
     let count = KEYBOARD_SEND_FAILURES.fetch_add(1, Ordering::Relaxed) + 1;
     // A blocked keyboard can generate hundreds of events per second. Keep enough
     // evidence for diagnosis without allowing the log file to grow unbounded.
     if count <= 10 || count % 100 == 0 {
         let error = get_error();
+        let foreground = foreground_window_debug_context();
         if error.is_empty() {
             log::error!(
-                "Windows SendInput inserted 0 keyboard events (failure #{count}, flags={flags:#x}, vk={vk:#x}, scan={scan:#x}). The target may be on a higher-integrity/UAC desktop or input injection may be blocked by endpoint security."
+                "Windows SendInput inserted 0 keyboard events (failure #{count}, flags={flags:#x}, vk={vk:#x}, scan={scan:#x}). The target may be on a higher-integrity/UAC desktop or input injection may be blocked by endpoint security. {foreground}"
             );
         } else {
             log::error!(
-                "Windows SendInput inserted 0 keyboard events (failure #{count}, flags={flags:#x}, vk={vk:#x}, scan={scan:#x}): {error}"
+                "Windows SendInput inserted 0 keyboard events (failure #{count}, flags={flags:#x}, vk={vk:#x}, scan={scan:#x}): {error}. {foreground}"
             );
         }
     }
@@ -47,13 +115,14 @@ fn log_mouse_send_failure(flags: u32, data: u32) {
     let count = MOUSE_SEND_FAILURES.fetch_add(1, Ordering::Relaxed) + 1;
     if count <= 10 || count % 100 == 0 {
         let error = get_error();
+        let foreground = foreground_window_debug_context();
         if error.is_empty() {
             log::error!(
-                "Windows SendInput inserted 0 mouse events (failure #{count}, flags={flags:#x}, data={data:#x}). Input injection may be blocked by endpoint security."
+                "Windows SendInput inserted 0 mouse events (failure #{count}, flags={flags:#x}, data={data:#x}). Input injection may be blocked by endpoint security. {foreground}"
             );
         } else {
             log::error!(
-                "Windows SendInput inserted 0 mouse events (failure #{count}, flags={flags:#x}, data={data:#x}): {error}"
+                "Windows SendInput inserted 0 mouse events (failure #{count}, flags={flags:#x}, data={data:#x}): {error}. {foreground}"
             );
         }
     }
@@ -75,10 +144,7 @@ fn mouse_event(flags: u32, data: u32, dx: i32, dy: i32) -> DWORD {
         type_: INPUT_MOUSE,
         u,
     };
-    let result = unsafe {
-        SetLastError(0);
-        SendInput(1, &mut input as LPINPUT, size_of::<INPUT>() as c_int)
-    };
+    let result = send_input_with_retry(std::slice::from_mut(&mut input));
     if result == 0 {
         log_mouse_send_failure(flags, data);
     }
@@ -90,11 +156,7 @@ fn keybd_event(mut flags: u32, vk: u16, scan: u16) -> DWORD {
     unsafe {
         // https://github.com/rustdesk/rustdesk/issues/366
         if scan == 0 {
-            if LAYOUT.is_null() {
-                let current_window_thread_id =
-                    GetWindowThreadProcessId(GetForegroundWindow(), std::ptr::null_mut());
-                LAYOUT = GetKeyboardLayout(current_window_thread_id);
-            }
+            LAYOUT = foreground_keyboard_layout();
             scan = MapVirtualKeyExW(vk as _, 0, LAYOUT) as _;
         }
     }
@@ -118,16 +180,7 @@ fn keybd_event(mut flags: u32, vk: u16, scan: u16) -> DWORD {
         type_: INPUT_KEYBOARD,
         u: union,
     }; 1];
-    let result = unsafe {
-        // SendInput does not set an error when UIPI blocks injection. Clear any
-        // stale value so the diagnostic below does not report an unrelated error.
-        SetLastError(0);
-        SendInput(
-            inputs.len() as UINT,
-            inputs.as_mut_ptr(),
-            size_of::<INPUT>() as c_int,
-        )
-    };
+    let result = send_input_with_retry(&mut inputs);
     if result == 0 {
         log_keyboard_send_failure(flags, vk, scan);
     }
@@ -531,9 +584,7 @@ impl Enigo {
         // NOTE VkKeyScanW uses the current keyboard LAYOUT
         // to specify a LAYOUT use VkKeyScanExW and GetKeyboardLayout
         // or load one with LoadKeyboardLayoutW
-        let current_window_thread_id =
-            unsafe { GetWindowThreadProcessId(GetForegroundWindow(), std::ptr::null_mut()) };
-        unsafe { LAYOUT = GetKeyboardLayout(current_window_thread_id) };
+        unsafe { LAYOUT = foreground_keyboard_layout() };
         unsafe { VkKeyScanExW(chr as _, LAYOUT) as _ }
     }
 }
