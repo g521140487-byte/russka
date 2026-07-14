@@ -1,5 +1,5 @@
 use self::winapi::ctypes::c_int;
-use self::winapi::shared::{basetsd::ULONG_PTR, minwindef::*, windef::*};
+use self::winapi::shared::{basetsd::ULONG_PTR, minwindef::*, ntdef::HANDLE, windef::*};
 use self::winapi::um::winbase::*;
 use self::winapi::um::winuser::*;
 use winapi;
@@ -13,6 +13,14 @@ use std::time::Duration;
 extern "system" {
     pub fn GetLastError() -> DWORD;
     pub fn SetLastError(dwErrCode: DWORD);
+    fn OpenProcess(dwDesiredAccess: DWORD, bInheritHandle: BOOL, dwProcessId: DWORD) -> HANDLE;
+    fn QueryFullProcessImageNameW(
+        hProcess: HANDLE,
+        dwFlags: DWORD,
+        lpExeName: *mut u16,
+        lpdwSize: *mut DWORD,
+    ) -> BOOL;
+    fn CloseHandle(hObject: HANDLE) -> BOOL;
 }
 
 /// The main struct for handling the event emitting
@@ -24,11 +32,15 @@ static mut LAYOUT: HKL = std::ptr::null_mut();
 pub const ENIGO_INPUT_EXTRA_VALUE: ULONG_PTR = 100;
 
 static KEYBOARD_SEND_FAILURES: AtomicUsize = AtomicUsize::new(0);
+static KEYBOARD_SEND_ATTEMPTS: AtomicUsize = AtomicUsize::new(0);
 static MOUSE_SEND_FAILURES: AtomicUsize = AtomicUsize::new(0);
 
 const SEND_INPUT_RETRY_ATTEMPTS: usize = 2;
 const SEND_INPUT_RETRY_DELAY_MS: u64 = 2;
+const KEYBOARD_CONTEXT_LOG_INTERVAL: usize = 50;
 const WINDOW_TITLE_LOG_LIMIT: usize = 160;
+const PROCESS_IMAGE_PATH_BUFFER_LEN: usize = 32 * 1024;
+const PROCESS_QUERY_LIMITED_INFORMATION: DWORD = 0x1000;
 
 fn send_input_with_retry(inputs: &mut [INPUT]) -> DWORD {
     let mut result = 0;
@@ -63,6 +75,31 @@ fn foreground_keyboard_layout() -> HKL {
     }
 }
 
+fn process_image_path(process_id: DWORD) -> String {
+    if process_id == 0 {
+        return String::new();
+    }
+
+    unsafe {
+        let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, process_id);
+        if process.is_null() {
+            return format!("open_process_error={}", GetLastError());
+        }
+
+        let mut buffer = vec![0u16; PROCESS_IMAGE_PATH_BUFFER_LEN];
+        let mut size = buffer.len() as DWORD;
+        let ok = QueryFullProcessImageNameW(process, 0, buffer.as_mut_ptr(), &mut size);
+        let last_error = GetLastError();
+        CloseHandle(process);
+
+        if ok == 0 || size == 0 {
+            return format!("query_image_path_error={last_error}");
+        }
+
+        String::from_utf16_lossy(&buffer[..size as usize])
+    }
+}
+
 fn foreground_window_debug_context() -> String {
     unsafe {
         let hwnd = GetForegroundWindow();
@@ -80,16 +117,36 @@ fn foreground_window_debug_context() -> String {
         } else {
             String::new()
         };
+        let process_path = process_image_path(process_id);
 
         format!(
-            "foreground_hwnd={:?}, foreground_thread_id={}, foreground_pid={}, keyboard_layout={:#x}, foreground_title={:?}",
+            "foreground_hwnd={:?}, foreground_thread_id={}, foreground_pid={}, foreground_process_path={:?}, keyboard_layout={:#x}, foreground_title={:?}",
             hwnd,
             thread_id,
             process_id,
+            process_path,
             layout as usize,
             title
         )
     }
+}
+
+fn log_current_layout_and_window(flags: u32, vk: u16, scan: u16) {
+    let count = KEYBOARD_SEND_ATTEMPTS.fetch_add(1, Ordering::Relaxed) + 1;
+    if count <= 5 || count % KEYBOARD_CONTEXT_LOG_INTERVAL == 0 {
+        log::info!(
+            "[ruibo-diag] keyboard_send_context attempt=#{count}, flags={flags:#x}, vk={vk:#x}, scan={scan:#x}. {}",
+            foreground_window_debug_context()
+        );
+    }
+}
+
+#[allow(dead_code)]
+fn try_direct_post_message(_vk: u16, _scan: u16) -> bool {
+    log::warn!(
+        "[ruibo-diag] try_direct_post_message is intentionally disabled in this local build; direct queue posting is not used."
+    );
+    false
 }
 
 fn log_keyboard_send_failure(flags: u32, vk: u16, scan: u16) {
@@ -180,6 +237,7 @@ fn keybd_event(mut flags: u32, vk: u16, scan: u16) -> DWORD {
         type_: INPUT_KEYBOARD,
         u: union,
     }; 1];
+    log_current_layout_and_window(flags, vk, scan);
     let result = send_input_with_retry(&mut inputs);
     if result == 0 {
         log_keyboard_send_failure(flags, vk, scan);
